@@ -1,0 +1,5 @@
+venv/
+__pycache__/
+hacksprint.db
+uploads/
+.env

@@ -1,0 +1,140 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#14233a"><link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg"><title>TradeLedger</title>
+<style>
+:root{--ink:#14233a;--amber:#e8a317;--bg:#eef2f5;--card:#fff;--line:#d5dde4;--mut:#5d6b7a}
+*{box-sizing:border-box}body{margin:0;font:16px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--ink);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+header b{font-size:17px}header small{opacity:.75}
+nav{display:flex;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{flex:1;border:0;background:none;padding:12px;font:inherit;color:var(--mut);border-bottom:3px solid transparent;white-space:nowrap}
+nav button.on{color:var(--ink);border-color:var(--amber);font-weight:600}
+main{max-width:640px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+ul{margin:6px 0;padding-left:18px}small,.mut{color:var(--mut)}
+input,button.btn{font:inherit;padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;margin:4px 0}
+button.btn{background:var(--ink);color:#fff;border:0;cursor:pointer;width:auto;padding:10px 16px}
+button.btn.alt{background:#fff;color:var(--ink);border:1px solid var(--ink)}
+button.btn.go{background:var(--amber);color:var(--ink);font-weight:600}
+.badge{font-size:13px;padding:2px 10px;border-radius:12px;background:#e3e9ee}
+.accepted{background:#dbe8fb}.ready{background:#fdeec4}.delivered{background:#fbdcd0}.closed{background:#cfeedd}.rejected{background:#eee;text-decoration:line-through}
+.login{max-width:360px;margin:8vh auto;padding:16px}.login h1{margin:0}
+.demo button{margin:3px 3px 0 0;font-size:13px;padding:6px 10px;border:1px solid var(--line);background:#fff;border-radius:14px}
+.bar{background:#fdeec4;padding:8px 12px;border-radius:6px;margin-bottom:12px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:6px;display:none;max-width:90%}
+</style></head><body><div id="app"></div><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s),app=$('#app');
+let S=JSON.parse(localStorage.sess||'null'),tab='',cache=JSON.parse(localStorage.cache||'{}');
+const Q=()=>JSON.parse(localStorage.queue||'[]'),setQ=q=>localStorage.queue=JSON.stringify(q);
+const rs=p=>'₹'+(p/100).toLocaleString('en-IN');
+const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2);
+const LABEL={requested:'New request',accepted:'Accepted',rejected:'Rejected',ready:'Ready',delivered:'Delivered, payment pending',closed:'Bill closed'};
+const TABS={distributor:['Orders','Articles'],salesperson:['New order','My orders'],delivery:['Pending deliveries'],collector:['Pending payments'],retailer:['My bills']};
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
+async function api(p,o={}){
+  const h={'x-token':S?S.token:''};let body=o.body;
+  if(o.json){h['Content-Type']='application/json';body=JSON.stringify(o.json)}
+  const r=await fetch('/api'+p,{method:o.method||'GET',headers:h,body});
+  if(!r.ok){let m='Something went wrong';try{m=(await r.json()).detail}catch{}
+    if(r.status==401&&S){logout();} throw new Error(m)}
+  return r.json();
+}
+function logout(){S=null;localStorage.removeItem('sess');tab='';render()}
+function loginView(){
+  app.innerHTML=`<div class=login><h1>TradeLedger</h1><p class=mut>Sign in with your phone number</p>
+  <input id=ph inputmode=numeric placeholder="Phone number"><input id=pw type=password placeholder="Password">
+  <button class="btn go" onclick="doLogin()">Sign in</button>
+  <p class=mut>Demo accounts (password demo123):</p><div class=demo>
+  ${[['Distributor','9000000001'],['Salesperson','9000000002'],['Delivery','9000000003'],['Collection','9000000004'],['Retailer','9000000005']]
+   .map(([n,p])=>`<button onclick="$('#ph').value='${p}';$('#pw').value='demo123'">${n}</button>`).join('')}</div></div>`;
+}
+async function doLogin(){
+  try{S=await api('/login',{method:'POST',json:{phone:$('#ph').value,password:$('#pw').value}});
+    localStorage.sess=JSON.stringify(S);tab='';render();sync()}
+  catch(e){toast(e.message)}
+}
+function render(){
+  if(!S)return loginView();
+  const t=TABS[S.role];if(!t.includes(tab))tab=t[0];
+  app.innerHTML=`<header><div><b>TradeLedger</b><br><small>${S.name}${navigator.onLine?'':' | offline'}</small></div>
+  <button class="btn alt" style="padding:6px 12px" onclick="logout()">Sign out</button></header>
+  <nav>${t.map(x=>`<button class="${x==tab?'on':''}" onclick="tab='${x}';render()">${x}</button>`).join('')}</nav><main id=main></main>`;
+  ({'Orders':distOrders,'Articles':distArticles,'New order':newOrder,'My orders':myOrders,
+    'Pending deliveries':deliveries,'Pending payments':payments,'My bills':bills})[tab]();
+}
+function card(o,act=''){return `<div class=card><div class=row><b>#${o.id} ${o.retailer_name}</b><span class="badge ${o.status}">${LABEL[o.status]}</span></div>
+  <small>GSTIN ${o.gstin}, ${o.created.slice(0,10)}</small><ul>${o.items.map(i=>`<li>${i.name} x ${i.qty}</li>`).join('')}</ul>
+  <div class=row><span>Total ${rs(o.total_paise)}</span><span>Paid ${rs(o.paid_paise)}</span></div>
+  ${o.last_payment?`<small>Last payment: ${o.last_payment}</small><br>`:''}
+  ${o.proof?`<a href="${o.proof}" target=_blank>View delivery proof</a>`:''}${act}</div>`}
+async function list(filter,actions,empty){
+  try{const os=(await api('/orders')).filter(filter);
+    $('#main').innerHTML=os.length?os.map(o=>card(o,actions(o))).join(''):`<p class=mut>${empty}</p>`}
+  catch(e){$('#main').innerHTML=`<p class=mut>Could not load. ${navigator.onLine?e.message:'You are offline.'}</p>`}
+}
+const call=(p,o)=>api(p,o).then(render).catch(e=>toast(e.message));
+// distributor
+const distOrders=()=>list(()=>true,o=>
+  o.status=='requested'?`<div class=row><button class="btn go" onclick="call('/orders/${o.id}/status',{method:'POST',json:{action:'accept'}})">Accept</button>
+   <button class="btn alt" onclick="call('/orders/${o.id}/status',{method:'POST',json:{action:'reject'}})">Reject</button></div>`:
+  o.status=='accepted'?`<button class="btn go" onclick="call('/orders/${o.id}/status',{method:'POST',json:{action:'ready'}})">Mark ready for delivery</button>`:'','No orders yet.');
+async function distArticles(){
+  let a=[];try{a=await api('/articles')}catch(e){}
+  $('#main').innerHTML=`<div class=card><b>Add article</b><input id=an placeholder="Article name (e.g. Besan 5kg)">
+  <input id=ab type=number placeholder="Buy price (₹)"><input id=as type=number placeholder="Selling price (₹)">
+  <button class="btn go" onclick="addArt()">Add article</button></div>
+  ${a.map(x=>`<div class="card row"><b>${x.name}</b><span>Buy ${rs(x.buy_paise)}, Sell ${rs(x.sell_paise)}</span></div>`).join('')}`;
+}
+async function addArt(){
+  try{await api('/articles',{method:'POST',json:{name:$('#an').value,buy:+$('#ab').value,sell:+$('#as').value}});toast('Article added');render()}
+  catch(e){toast(e.message)}
+}
+// salesperson (works offline)
+async function newOrder(){
+  try{cache.articles=await api('/articles');localStorage.cache=JSON.stringify(cache)}catch(e){}
+  const a=cache.articles||[];
+  $('#main').innerHTML=`${bar()}<div class=card><b>Retailer details</b><input id=rn placeholder="Retailer name" value="Sharma Stores">
+  <input id=rg placeholder="GSTIN" value="29ABCDE1234F1Z5"><input id=ra placeholder="Address"></div>
+  <div class=card><b>Articles</b>${a.length?a.map(x=>`<div class=row><span>${x.name}<br><small>${rs(x.sell_paise)}</small></span>
+  <input type=number min=0 data-id=${x.id} data-p=${x.sell_paise} placeholder="Qty" style="width:90px" oninput="tot()"></div>`).join(''):'<p class=mut>Connect once to load articles.</p>'}
+  <div class=row><b>Total <span id=tot>₹0</span></b><button class="btn go" onclick="place()">Save order</button></div></div>`;
+}
+function tot(){let t=0;document.querySelectorAll('[data-id]').forEach(i=>t+=(+i.value||0)*i.dataset.p);$('#tot').textContent=rs(t)}
+function place(){
+  const items=[...document.querySelectorAll('[data-id]')].filter(i=>+i.value>0).map(i=>({article_id:+i.dataset.id,qty:+i.value}));
+  if(!items.length||!$('#rn').value||!$('#rg').value)return toast('Add retailer name, GSTIN and at least one article');
+  setQ([...Q(),{op_id:uid(),retailer_name:$('#rn').value,gstin:$('#rg').value,address:$('#ra').value,items,saved:new Date().toISOString()}]);
+  toast('Saved on this device, pending sync');sync();tab='My orders';render();
+}
+const bar=()=>Q().length?`<div class="bar row"><span>${Q().length} order(s) saved on this device, pending sync</span><button class="btn alt" onclick="sync(true)">Sync now</button></div>`:'';
+async function sync(manual){
+  if(!S||S.role!='salesperson'||!Q().length)return;
+  try{const acks=new Set((await api('/orders',{method:'POST',json:Q()})).filter(r=>r.ack).map(r=>r.op_id));
+    setQ(Q().filter(q=>!acks.has(q.op_id)));if(manual)toast('Synced');render()}
+  catch(e){if(manual)toast('Still offline. Orders are safe on this device.')}
+}
+function myOrders(){
+  const pend=Q().map(q=>`<div class=card><div class=row><b>${q.retailer_name}</b><span class=badge>Pending sync</span></div><small>${q.items.length} article(s), saved on this device</small></div>`).join('');
+  list(()=>true,()=>'','No orders yet.').then(()=>{$('#main').innerHTML=bar()+pend+$('#main').innerHTML})
+}
+// delivery
+const deliveries=()=>list(()=>true,o=>`<input type=file accept="image/*" capture=environment id=f${o.id}>
+  <button class="btn go" onclick="up(${o.id})">Upload signed bill, mark delivered</button>`,'No pending deliveries.');
+async function up(id){
+  const f=$('#f'+id).files[0];if(!f)return toast('Take a photo of the signed bill first');
+  const fd=new FormData();fd.append('photo',f);call(`/orders/${id}/deliver`,{method:'POST',body:fd});
+}
+// collection
+const payments=()=>list(()=>true,o=>`<p><b>Balance due ${rs(o.total_paise-o.paid_paise)}</b></p>
+  <input type=number id=a${o.id} placeholder="Amount collected (₹)"><button class="btn go" onclick="pay(${o.id})">Record payment</button>`,'No pending payments.');
+function pay(id){const v=+$('#a'+id).value;if(!(v>0))return toast('Enter the amount collected');
+  call(`/orders/${id}/collect`,{method:'POST',json:{op_id:uid(),amount:v}})}
+// retailer
+const bills=()=>list(()=>true,()=>'','No bills yet.');
+addEventListener('online',()=>{sync();render()});addEventListener('offline',render);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
+render();sync();
+</script></body></html>
