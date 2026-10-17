@@ -14,7 +14,7 @@ main{max-width:640px;margin:0 auto;padding:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
 .row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 ul{margin:6px 0;padding-left:18px}small,.mut{color:var(--mut)}
-input,button.btn{font:inherit;padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;margin:4px 0}
+input,select,button.btn{font:inherit;padding:10px;border:1px solid var(--line);border-radius:6px;width:100%;margin:4px 0}
 button.btn{background:var(--ink);color:#fff;border:0;cursor:pointer;width:auto;padding:10px 16px}
 button.btn.alt{background:#fff;color:var(--ink);border:1px solid var(--ink)}
 button.btn.go{background:var(--amber);color:var(--ink);font-weight:600}
@@ -22,9 +22,13 @@ button.btn.go{background:var(--amber);color:var(--ink);font-weight:600}
 .accepted{background:#dbe8fb}.ready{background:#fdeec4}.delivered{background:#fbdcd0}.closed{background:#cfeedd}.rejected{background:#eee;text-decoration:line-through}
 .login{max-width:360px;margin:8vh auto;padding:16px}.login h1{margin:0}
 .demo button{margin:3px 3px 0 0;font-size:13px;padding:6px 10px;border:1px solid var(--line);background:#fff;border-radius:14px}
+.v-green{background:#cfeedd}.v-amber{background:#fdeec4}.v-red{background:#fbdcd0}
 .bar{background:#fdeec4;padding:8px 12px;border-radius:6px;margin-bottom:12px}
 #toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:6px;display:none;max-width:90%}
 </style></head><body><div id="app"></div><div id="toast"></div>
+<dialog id=cd style="border:0;border-radius:10px;padding:16px;max-width:340px;width:90%"><p id=cdt></p>
+<input id=cdn type=number min=0 max=365 placeholder="Credit period in days (e.g. 45)"><small id=cde style="color:#b3261e"></small>
+<div class=row><button class="btn alt" onclick="$('#cd').close()">Later</button><button class="btn go" onclick="saveCredit()">Save</button></div></dialog>
 <script>
 const $=s=>document.querySelector(s),app=$('#app');
 let S=JSON.parse(localStorage.sess||'null'),tab='',cache=JSON.parse(localStorage.cache||'{}');
@@ -32,7 +36,7 @@ const Q=()=>JSON.parse(localStorage.queue||'[]'),setQ=q=>localStorage.queue=JSON
 const rs=p=>'₹'+(p/100).toLocaleString('en-IN');
 const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2);
 const LABEL={requested:'New request',accepted:'Accepted',rejected:'Rejected',ready:'Ready',delivered:'Delivered, payment pending',closed:'Bill closed'};
-const TABS={distributor:['Orders','Articles'],salesperson:['New order','My orders'],delivery:['Pending deliveries'],collector:['Pending payments'],retailer:['My bills']};
+const TABS={distributor:['Orders','Retailers','Articles','Insights'],salesperson:['New order','My orders'],delivery:['Pending deliveries'],collector:['Pending payments'],retailer:['My bills']};
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
 async function api(p,o={}){
   const h={'x-token':S?S.token:''};let body=o.body;
@@ -61,14 +65,17 @@ function render(){
   const t=TABS[S.role];if(!t.includes(tab))tab=t[0];
   app.innerHTML=`<header><div><b>TradeLedger</b><br><small>${S.name}${navigator.onLine?'':' | offline'}</small></div>
   <button class="btn alt" style="padding:6px 12px" onclick="logout()">Sign out</button></header>
-  <nav>${t.map(x=>`<button class="${x==tab?'on':''}" onclick="tab='${x}';render()">${x}</button>`).join('')}</nav><main id=main></main>`;
-  ({'Orders':distOrders,'Articles':distArticles,'New order':newOrder,'My orders':myOrders,
+  <nav>${t.map(x=>`<button class="${x==tab?'on':''}" onclick="tab='${x}';openR=null;render()">${x}</button>`).join('')}</nav><main id=main></main>`;
+  ({'Orders':distOrders,'Retailers':retailersView,'Articles':distArticles,'Insights':distInsights,'New order':newOrder,'My orders':myOrders,
     'Pending deliveries':deliveries,'Pending payments':payments,'My bills':bills})[tab]();
+  checkCredit();
 }
-function card(o,act=''){return `<div class=card><div class=row><b>#${o.id} ${o.retailer_name}</b><span class="badge ${o.status}">${LABEL[o.status]}</span></div>
+function card(o,act=''){const done=['delivered','closed'].includes(o.status);return `<div class=card><div class=row><b>#${o.id} ${o.retailer_name}</b><span class="badge ${o.status}">${LABEL[o.status]}</span></div>
   <small>GSTIN ${o.gstin}, ${o.created.slice(0,10)}</small><ul>${o.items.map(i=>`<li>${i.name} x ${i.qty}</li>`).join('')}</ul>
   <div class=row><span>Total ${rs(o.total_paise)}</span><span>Paid ${rs(o.paid_paise)}</span></div>
-  ${o.last_payment?`<small>Last payment: ${o.last_payment}</small><br>`:''}
+  ${o.credit_days!=null?`<small>Credit period: ${o.credit_days} days, due ${o.due_date}</small><br>`:(o.status=='delivered'?'<small>Credit period: not set yet</small><br>':'')}
+  ${done?`<small>Last payment: ${o.last_payment||'none yet'}</small><br>`:''}
+  ${o.overdue_paise>0?`<b style="color:#b3261e">Overdue ${rs(o.overdue_paise)}</b><br>`:''}
   ${o.proof?`<a href="${o.proof}" target=_blank>View delivery proof</a>`:''}${act}</div>`}
 async function list(filter,actions,empty){
   try{const os=(await api('/orders')).filter(filter);
@@ -91,6 +98,125 @@ async function distArticles(){
 async function addArt(){
   try{await api('/articles',{method:'POST',json:{name:$('#an').value,buy:+$('#ab').value,sell:+$('#as').value}});toast('Article added');render()}
   catch(e){toast(e.message)}
+}
+// credit period dialog
+let askId=null;const skip=new Set();
+async function checkCredit(){
+  if(!S||S.role!='distributor'||askId!==null)return;
+  try{const o=(await api('/orders')).find(x=>x.status=='delivered'&&x.credit_days==null&&!skip.has(x.id));
+    if(!o)return;askId=o.id;$('#cde').textContent='';
+    $('#cdt').textContent=`Bill #${o.id} for ${o.retailer_name} (${rs(o.total_paise)}) was delivered. How many days of credit?`;
+    $('#cdn').value=30;$('#cd').showModal()}catch(e){}
+}
+async function saveCredit(){
+  const d=+$('#cdn').value;if(!(d>=0&&d<=365))return $('#cde').textContent='Enter days between 0 and 365';
+  try{await api(`/orders/${askId}/credit`,{method:'POST',json:{days:d}});askId=null;$('#cd').close();toast('Credit period saved');render()}
+  catch(e){$('#cde').textContent=e.message}
+}
+const scoreTag=s=>!s||s.score==null?'<span class=badge>Loyalty: no data yet</span>':
+  `<span class=badge style="background:${s.score>=75?'#cfeedd':s.score>=60?'#fdeec4':'#fbdcd0'}"><b>Loyalty ${s.score}/100${s.grade?' ('+s.grade+')':', provisional'}</b></span>`;
+const scoreInfo=s=>!s||s.score==null?'No bills past their due date yet.':`On-time ${s.on_time_rate}%, average delay ${s.average_delay_days} days, overdue ${rs(s.overdue_amount_paise)}, ${s.eligible_invoices} bill(s) counted. ${s.status}.`;
+// distributor: retailers
+let openR=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+async function retailersView(){
+  let rl,os;
+  try{[rl,os]=await Promise.all([api('/retailers'),api('/orders')])}
+  catch(e){return $('#main').innerHTML=`<p class=mut>Could not load. ${e.message}</p>`}
+  const mine=g=>os.filter(o=>o.gstin==g);
+  const due=g=>mine(g).filter(o=>o.status=='delivered').reduce((t,o)=>t+o.total_paise-o.paid_paise,0);
+  if(openR){
+    const r=rl.find(x=>x.gstin==openR);
+    if(r){const b=mine(r.gstin);
+      $('#main').innerHTML=`<button class="btn alt" onclick="openR=null;render()">Back to retailers</button>
+      <div class=card style="margin-top:12px"><b>${esc(r.name)}</b><br><small>GSTIN ${esc(r.gstin)}</small><br>
+      <small>Phone ${esc(r.phone)||'not added'}</small><br><small>${esc(r.address)||'No address added'}</small><br>
+      <b>Outstanding ${rs(due(r.gstin))}</b><br>${scoreTag(r.score)}<br><small>${scoreInfo(r.score)}</small></div>
+      <h3>Bills (${b.length})</h3>${b.length?b.map(o=>card(o)).join(''):'<p class=mut>No bills for this retailer yet.</p>'}`;
+      return}
+    openR=null;
+  }
+  $('#main').innerHTML=`<div class=card><b>Add new retailer</b>
+    <input id=nn placeholder="Retailer name"><input id=nc inputmode=numeric placeholder="Contact number">
+    <input id=ng placeholder="GSTIN"><input id=na placeholder="Address">
+    <button class="btn go" onclick="addRetailer()">Add retailer</button></div>
+    <h3>Retailers (${rl.length})</h3>
+    ${rl.map(r=>`<div class=card style="cursor:pointer" onclick="openR='${esc(r.gstin)}';render()">
+      <div class=row><b>${esc(r.name)}</b><small>${mine(r.gstin).length} bill(s)</small></div>
+      <small>Outstanding ${rs(due(r.gstin))}</small><br>${scoreTag(r.score)}</div>`).join('')||'<p class=mut>No retailers yet.</p>'}`;
+}
+async function addRetailer(){
+  try{await api('/retailers',{method:'POST',json:{name:$('#nn').value,phone:$('#nc').value,gstin:$('#ng').value,address:$('#na').value}});
+    toast('Retailer added');render()}
+  catch(e){toast(e.message)}
+}
+// insights (distributor): ROI per retailer and overdraft check
+const pc=v=>v==null?'-':v+'%';
+async function distInsights(){
+  let d;
+  try{d=await api('/insights')}
+  catch(e){$('#main').innerHTML=`<p class=mut>Could not load. ${navigator.onLine?esc(e.message):'You are offline.'}</p>`;return}
+  const m=d.summary,byRoi=(x,y)=>(y.roi_pct??-1)-(x.roi_pct??-1);
+  $('#main').innerHTML=`<div class=card><b>Your numbers</b><br><small>ROI counts bills that are fully paid.</small>
+  <div class=row><span>Profit so far</span><b>${rs(m.profit_paise)}</b></div>
+  <div class=row><span>ROI</span><b>${pc(m.roi_pct)}</b></div>
+  <div class=row><span>Waiting to be collected</span><b>${rs(m.outstanding_paise)}</b></div>
+  <div class=row><span>Older than 30 days</span><b>${rs(m.overdue_paise)}</b></div></div>
+  <div class=card><b>Overdraft check</b><br><small>Should you borrow to restock?</small>
+  <small style="display:block;margin:10px 0 2px">What will you buy with it?</small>
+  <select id=oi><option value="">All items together</option>${d.articles.map(a=>`<option>${esc(a.name)}</option>`).join('')}</select>
+  <small style="display:block;margin:10px 0 2px">How much do you want to borrow? (₹)</small>
+  <input id=oa type=number min=0 placeholder="e.g. 100000">
+  <small style="display:block;margin:10px 0 2px">What does the bank charge? (% per year)</small>
+  <input id=orate type=number min=0 step=0.1 placeholder="e.g. 12" value="${localStorage.odRate||12}">
+  <small style="display:block;margin:10px 0 2px">For how many days? (leave empty to use your usual payback time)</small>
+  <input id=od type=number min=1 placeholder="e.g. 15">
+  <button class="btn go" onclick="advise()">Check</button><div id=adv></div></div>
+  <p><b>Retailers by return</b></p>
+  ${d.retailers.length?[...d.retailers].sort(byRoi).map(r=>`<div class=card><div class=row><b>${esc(r.name)}</b>
+   <span class=badge>${r.roi_pct==null?'No paid bills yet':'ROI '+r.roi_pct+'%'}</span></div>
+   ${r.roi_pct==null?'':`<small>Margin ${pc(r.margin_pct)}, profit ${rs(r.profit_paise)}</small>`}
+   ${r.outstanding_paise?`<br><small>Owes ${rs(r.outstanding_paise)}, oldest bill ${r.oldest_open_days} days</small>`:''}</div>`).join(''):'<p class=mut>No delivered bills yet.</p>'}
+  <p><b>Items by return</b></p>
+  ${d.articles.length?[...d.articles].sort(byRoi).map(a=>`<div class=card><div class=row><b>${esc(a.name)}</b><span class=badge>${a.roi_pct==null?'-':'ROI '+a.roi_pct+'%'}</span></div>
+   <small>Margin ${pc(a.margin_pct)}, profit ${rs(a.profit_paise)}, ${a.qty} sold</small></div>`).join(''):'<p class=mut>No fully paid bills yet.</p>'}
+  ${m.skipped_no_cost?`<p class=mut>${m.skipped_no_cost} paid bill(s) left out because the buy price is not known.</p>`:''}`;
+}
+async function advise(){
+  const a=+$('#oa').value,r=+$('#orate').value,d=+$('#od').value,it=$('#oi').value;
+  if(!(a>0)||$('#orate').value===''||!(r>=0))return toast('Enter the amount and the yearly interest rate');
+  localStorage.odRate=r;
+  try{
+    const q=`/overdraft/advice?amount=${a}&rate=${r}`;
+    const x=await api(q+`${d>0?'&days='+d:''}${it?'&item='+encodeURIComponent(it):''}`);
+    if(x.verdict=='nodata'){$('#adv').innerHTML=`<p class=mut>${esc(x.message)}</p>`;return}
+    if(it&&x.item!==it)toast('Server files are out of date: replace main.py and insights.py, then restart');
+    let all=null;                                   // same amount and days, all items together, for comparison
+    if(it){try{all=await api(q+`&days=${x.days}`)}catch(e){}}
+    const rr=p=>rs(Math.round(p/100)*100);
+    const bank=+(r*x.days/365).toFixed(2),earn=+(x.expected_profit_paise/(a*100)*100).toFixed(1);
+    const times=x.interest_paise>0?Math.round(x.expected_profit_paise/x.interest_paise*10)/10:null;
+    const V={green:['Worth it','v-green','The profit you can expect is much bigger than the interest.'],
+      amber:['Borderline','v-amber','The profit is only a little bigger than the interest, so one slow-paying retailer could wipe it out.'],
+      red:['Not worth it','v-red','The interest would cost more than the profit you can expect.']},[w,c,why]=V[x.verdict];
+    const ep=y=>+(y.expected_profit_paise/(a*100)*100).toFixed(1);
+    const cmp=all&&all.verdict!='nodata'?`<p><b>Compared with all items together</b><br><small>Same ${rr(a*100)} for the same ${x.days} days:</small></p>
+    <div class=row><span>${esc(it)}</span><span><span class="badge ${c}">${w}</span> earns ${ep(x)}%, you keep ${rr(x.net_paise)}</span></div>
+    <div class=row><span>All items together</span><span><span class="badge ${V[all.verdict][1]}">${V[all.verdict][0]}</span> earns ${ep(all)}%, you keep ${rr(all.net_paise)}</span></div>`:'';
+    $('#adv').innerHTML=`<p><span class="badge ${c}">${w}</span> <small>${why}</small></p>
+    <p><b>The simple test</b><br><small>Compare both over the same ${x.days} days:</small></p>
+    <div class=row><span>The bank costs you</span><b>${bank}% of the money</b></div>
+    <div class=row><span>Your stock earns</span><b>${earn}% of the money</b></div>
+    <p><small>${times?`Your stock earns about ${times}× what the bank charges. `:''}Borrow only when the stock clearly earns more than the bank costs.</small></p>
+    <p><b>In rupees</b></p>
+    <p>1. You borrow <b>${rr(a*100)}</b> for <b>${x.days} days</b> at <b>${r}%</b> a year. The bank charges about <b>${rr(x.interest_paise)}</b>.</p>
+    <p>2. You spend it on stock and sell it like your past ${x.item?esc(x.item)+' ':''}bills: ${x.roi_pct}% profit on the money put in, paid back in about ${x.cycle_days} days. That earns about <b>${rr(x.expected_profit_paise)}</b>.</p>
+    <p>3. After the bank's charge you keep about <b>${rr(x.net_paise)}</b>.</p>
+    ${cmp}
+    <small>Worth it means the stock earns at least 2× the bank's charge. Borderline means between 1× and 2×. Not worth it means less than the bank's charge.</small>
+    <p><small>Estimate only, based on ${x.bills} fully paid bill${x.bills==1?'':'s'}${x.item?' that included '+esc(x.item):''}. It assumes you sell everything at your usual margin. ${x.bills<5?'With so few bills, treat it as rough.':''}</small></p>
+    ${x.receivables_paise>0?`<p class=bar>${rr(x.receivables_paise)} is waiting to be collected${x.overdue_paise?`, ${rr(x.overdue_paise)} of it older than 30 days`:''}. Collecting it first may mean you need to borrow less.</p>`:''}`;
+  }catch(e){toast(e.message)}
 }
 // salesperson (works offline)
 async function newOrder(){
@@ -135,6 +261,8 @@ function pay(id){const v=+$('#a'+id).value;if(!(v>0))return toast('Enter the amo
 // retailer
 const bills=()=>list(()=>true,()=>'','No bills yet.');
 addEventListener('online',()=>{sync();render()});addEventListener('offline',render);
+$('#cd').addEventListener('close',()=>{if(askId!==null){skip.add(askId);askId=null}});
+setInterval(checkCredit,15000);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
 render();sync();
 </script></body></html>
